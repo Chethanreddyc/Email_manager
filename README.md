@@ -3,8 +3,6 @@
 An intelligent n8n workflow that automatically classifies, prioritizes, and organizes your Gmail inbox using Google Gemini AI.
 
 ![n8n](https://img.shields.io/badge/n8n-v1.122+-blue?style=flat-square)
-![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
-![Status](https://img.shields.io/badge/status-active-success?style=flat-square)
 
 ## 📋 Table of Contents
 
@@ -90,7 +88,8 @@ Once activated, the workflow automatically:
 3. **Classifies** emails by category (work, personal, promotional, etc.)
 4. **Applies** appropriate Gmail labels
 5. **Marks** important/urgent emails with stars
-6. **Archives** low-priority promotional emails
+6. **Notifies** Sends telegram notification if action required
+7. **Archives** low-priority promotional emails
 
 ### Testing
 
@@ -103,9 +102,10 @@ Once activated, the workflow automatically:
 ```
 Email Received → Retrieve from Gmail → Analyze with Gemini
     ↓
-Classify & Score → Apply Labels → Mark Priority
+Classify & Score → Apply Labels → Mark Priority → send notification(if required)
     ↓
-Archive/Organize → Complete
+Organize → Complete
+    
 ```
 
 ## 🔐 Security Notes
@@ -118,9 +118,6 @@ Archive/Organize → Complete
 - **Backup Your Data**: Consider backing up important emails before automation runs
 - **Monitor Archiving**: Keep an eye on automated archiving to ensure no important emails are missed
 
-## 📝 License
-
-MIT License - See LICENSE file for details
 
 ## 🤝 Contributing
 
