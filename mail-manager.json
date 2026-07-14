@@ -1,0 +1,673 @@
+{
+  "name": "mail-manager",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {},
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        416,
+        0
+      ],
+      "id": "3ef755e8-849b-4b8b-a452-eb406bfc5344",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Gmail account",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n{\n  model: \"openai/gpt-oss-120b\",\n  temperature: 0.2,\n  response_format: { type: \"json_object\" },\n  messages: [\n    {\n      role: \"system\",\n      content: \"You are an intelligent email classification system for an engineering student actively learning software development, applying for internships, attending college, and participating in coding activities.\"\n    },\n    {\n      role: \"user\",\n      content:\n`EMAIL:\nSender: ${$json.sender_name} <${$json.sender_email}>\nSubject: ${$json.subject}\nGmail's own category signal (informational only, may be unreliable — do not treat as ground truth): ${$json.gmail_category_hint || 'none'}\nBody:\n${$json.email_body_clean}\n\nClassify this email and return ONLY a valid JSON object with exactly these fields, no markdown, no explanation, no code fences:\n\n{\n  \"category\": one of [\"CAREER\",\"COLLEGE\",\"PERSONAL\",\"FINANCE\",\"PROMOTION\",\"NEWSLETTER\",\"AUTOMATED\",\"OTHER\"],\n  \"importance\": one of [\"HIGH\",\"MEDIUM\",\"LOW\"],\n  \"urgency_score\": integer from 1 to 10,\n  \"action_required\": true or false,\n  \"deadline_detected\": \"YYYY-MM-DD\" or null,\n  \"reason\": \"one sentence explaining the classification\",\n  \"summary\": \"one sentence summary of the email\",\n  \"event_datetime\": \"YYYY-MM-DDTHH:MM:SS\" or null,\n  \"event_type\": one of [\"CONTEST\", \"DEADLINE\", \"NONE\"]\n}\n\nGuidance:\n- CAREER: internship communication, job applications, recruiter emails, interview invitations, coding assessments, application updates, placement opportunities, hackathons, technical opportunities. Recruitment and hiring emails are CAREER, not PROMOTION, even if they contain marketing-style language or come from a corporate careers page.\n- COLLEGE: exams, assignments, faculty communication, attendance, academic projects, college deadlines, placement cell communication.\n- If the email announces a coding contest, hackathon, or competitive programming event with a specific start time, set event_type to \"CONTEST\" and event_datetime to that start time in ISO format.\n- If the email states an assignment, application, or task deadline with a specific date (and time if mentioned), set event_type to \"DEADLINE\" and event_datetime accordingly. If only a date is given with no time, use 23:59:00 as the time.\n- If no specific date/time is mentioned, set event_type to \"NONE\" and event_datetime to null.\n- Assume IST (India Standard Time) if no timezone is specified.\n- PROMOTION: marketing, discounts, product ads, subscription upsells (e.g. \"buy now\", \"50% off\", \"upgrade to premium\"). Do NOT classify recruitment, job, or internship emails as PROMOTION even if they use persuasive language.\n- Security alerts, immediate deadlines, payment failures, interview deadlines, and account problems should receive a HIGH urgency_score (8-10).\n- Ignore Gmail's own category signal if it conflicts with the actual content of the email — Gmail's categorization is known to be unreliable, especially for forwarded emails.\n- Return ONLY the JSON object. No prose before or after it.`\n    }\n  ]\n}\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        1248,
+        0
+      ],
+      "id": "b413c9f3-383e-4b3b-b434-9f1a4536e6ee",
+      "name": "http request",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Header Auth account",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\n\nconst VALID_CATEGORIES = [\n  \"CAREER\",\n  \"COLLEGE\",\n  \"PERSONAL\",\n  \"FINANCE\",\n  \"PROMOTIONS\",\n  \"NEWSLETTER\",\n  \"AUTOMATED\",\n  \"OTHER\"\n];\n\nconst VALID_IMPORTANCE = [\n  \"HIGH\",\n  \"MEDIUM\",\n  \"LOW\"\n];\n\nconst errors = [];\nconst warnings = [];\n\n/* ---------------- Parse Check ---------------- */\n\nif (item.parse_error === true) {\n  errors.push(`JSON parse failed: ${item.parse_error_message || \"Unknown parse error\"}`);\n}\n\n/* ---------------- Category ---------------- */\n\nif (!VALID_CATEGORIES.includes(item.category)) {\n  warnings.push(`Unknown category \"${item.category}\". Defaulted to OTHER.`);\n  item.category = \"OTHER\";\n}\n\n/* ---------------- Importance ---------------- */\n\nif (!VALID_IMPORTANCE.includes(item.importance)) {\n  warnings.push(`Unknown importance \"${item.importance}\". Defaulted to MEDIUM.`);\n  item.importance = \"MEDIUM\";\n}\n\n/* ---------------- Urgency ---------------- */\n\nlet urgency = Number(item.urgency_score);\n\nif (!Number.isInteger(urgency)) {\n  warnings.push(\"urgency_score was not an integer. Defaulted to 5.\");\n  urgency = 5;\n}\n\nurgency = Math.max(1, Math.min(10, urgency));\n\n/* ---------------- Boolean ---------------- */\n\nif (typeof item.action_required !== \"boolean\") {\n  warnings.push(\"action_required was not boolean. Defaulted to false.\");\n  item.action_required = false;\n}\n\n/* ---------------- Deadline ---------------- */\n\nif (item.deadline_detected !== null &&\n    item.deadline_detected !== undefined &&\n    item.deadline_detected !== \"\") {\n\n    const valid =\n        /^\\d{4}-\\d{2}-\\d{2}$/.test(item.deadline_detected) &&\n        !isNaN(Date.parse(item.deadline_detected));\n\n    if (!valid) {\n        warnings.push(\"Invalid deadline format. Cleared.\");\n        item.deadline_detected = null;\n    }\n} else {\n    item.deadline_detected = null;\n}\n\n/* ---------------- Reason ---------------- */\n\nif (typeof item.reason !== \"string\" || item.reason.trim() === \"\") {\n    warnings.push(\"Missing reason.\");\n    item.reason = \"No reason generated.\";\n}\n\n/* ---------------- Summary ---------------- */\n\nif (typeof item.summary !== \"string\" || item.summary.trim() === \"\") {\n    warnings.push(\"Missing summary.\");\n    item.summary = \"No summary generated.\";\n}\n\n/* ---------------- Promotion Detection (Warning Only) ---------------- */\n\nconst emailText = `\n${item.subject || \"\"}\n${item.email_body_clean || \"\"}\n`.toLowerCase();\n\nconst promotionKeywords = [\n    \"discount\",\n    \"offer\",\n    \"off\",\n    \"sale\",\n    \"deal\",\n    \"coupon\",\n    \"limited time\",\n    \"buy now\",\n    \"claim\",\n    \"save\",\n    \"%\",\n    \"upgrade\",\n    \"premium\"\n];\n\nconst looksLikePromotion =\n    promotionKeywords.some(word => emailText.includes(word));\n\nif (looksLikePromotion && item.category !== \"PROMOTION\") {\n    warnings.push(\n        \"Email appears promotional but AI classified it as \" + item.category\n    );\n}\n\n/* ---------------- Final ---------------- */\n\nconst validationPassed =\n    errors.length === 0;\n\nreturn {\n    json: {\n        ...item,\n        urgency_score: urgency,\n        validation_passed: validationPassed,\n        validation_errors: errors,\n        validation_warnings: warnings\n    }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ],
+      "id": "b3c056a3-cda8-4af4-9132-76d0b84a7777",
+      "name": "Validate Classification"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\n\nconst CATEGORY = (item.category || \"OTHER\").toUpperCase();\nconst IMPORTANCE = (item.importance || \"MEDIUM\").toUpperCase();\nconst URGENCY = Number(item.urgency_score || 5);\n\nconst actionPlan = {\n  labels_to_apply: [],\n  mark_important: false,\n  star_email: false,\n  archive_email: false,\n  mark_read: false,\n  trigger_urgent_notification: false,\n  create_calendar_event: false,\n  generate_reply_draft: false\n};\n\nconst addLabel = (label) => {\n  if (!actionPlan.labels_to_apply.includes(label)) {\n    actionPlan.labels_to_apply.push(label);\n  }\n};\n\n// ---------- Category ----------\n\nswitch (CATEGORY) {\n\n  case \"CAREER\":\n    addLabel(\"AI/Career\");\n\n    if (item.action_required)\n      addLabel(\"AI/ActionRequired\");\n\n    if (item.deadline_detected)\n      actionPlan.create_calendar_event = true;\n\n    break;\n\n  case \"COLLEGE\":\n    addLabel(\"AI/College\");\n\n    if (item.action_required)\n      addLabel(\"AI/ActionRequired\");\n\n    if (item.deadline_detected)\n      actionPlan.create_calendar_event = true;\n\n    break;\n\n  case \"FINANCE\":\n    addLabel(\"AI/Finance\");\n\n    if (item.action_required)\n      addLabel(\"AI/ActionRequired\");\n\n    break;\n\n  case \"PERSONAL\":\n    addLabel(\"AI/Personal\");\n    break;\n\n  case \"PROMOTION\":\n    addLabel(\"AI/Promotion\");\n\n    actionPlan.archive_email = true;\n    actionPlan.mark_read = true;\n\n    break;\n\n  case \"NEWSLETTER\":\n    addLabel(\"AI/Newsletter\");\n\n    actionPlan.archive_email = true;\n\n    break;\n\n  case \"AUTOMATED\":\n    addLabel(\"AI/Automated\");\n\n    if (!item.action_required)\n      actionPlan.archive_email = true;\n\n    break;\n\n  default:\n    addLabel(\"AI/Other\");\n}\n\n// ---------- Importance ----------\n\nif (IMPORTANCE === \"HIGH\") {\n\n  addLabel(\"AI/Urgent\");\n\n  actionPlan.mark_important = true;\n  actionPlan.star_email = true;\n\n  if (URGENCY >= 8)\n    actionPlan.trigger_urgent_notification = true;\n}\n\nif (IMPORTANCE === \"MEDIUM\") {\n\n  if (URGENCY >= 7)\n    actionPlan.star_email = true;\n}\n\n// ---------- Edge Cases ----------\n\n// High urgency but AI forgot HIGH importance\n\nif (URGENCY >= 9 && IMPORTANCE !== \"HIGH\") {\n\n  actionPlan.mark_important = true;\n  actionPlan.star_email = true;\n\n  addLabel(\"AI/Urgent\");\n}\n\n// Deadline always deserves ActionRequired\n\nif (item.deadline_detected) {\n\n  addLabel(\"AI/ActionRequired\");\n}\n\n// Promotional emails should never notify\n\nif (\n  CATEGORY === \"PROMOTION\" ||\n  CATEGORY === \"NEWSLETTER\"\n) {\n  actionPlan.trigger_urgent_notification = false;\n}\n\n// Parse failed\n\nif (item.parse_error) {\n\n  addLabel(\"AI/NeedsReview\");\n\n  actionPlan.archive_email = false;\n  actionPlan.mark_read = false;\n}\n\n// Validation failed\n\nif (!item.validation_passed) {\n\n  addLabel(\"AI/NeedsReview\");\n\n  actionPlan.archive_email = false;\n  actionPlan.trigger_urgent_notification = false;\n}\n\nreturn {\n  json: {\n    ...item,\n    action_plan: actionPlan\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2096,
+        -96
+      ],
+      "id": "719436cd-93d0-4825-a6dc-63d834b44760",
+      "name": "Decision Engine"
+    },
+    {
+      "parameters": {
+        "resource": "label"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2368,
+        -96
+      ],
+      "id": "67ba293b-4538-4702-ac5d-93db6907d426",
+      "name": "Get all labels",
+      "webhookId": "6e1a4420-9621-4ca6-9ed9-4947ae38df33",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Gmail account",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const labelItems = $input.all().map(item => item.json);\nconst labelMap = {};\nlabelItems.forEach(l => { labelMap[l.name] = l.id; });\n\nconst decisionData = $('Decision Engine').first().json;\n\n// Resolve our custom AI/* labels\nconst customLabelIds = decisionData.action_plan.labels_to_apply\n  .map(name => labelMap[name])\n  .filter(id => id !== undefined);\n\n// System labels are always fixed IDs in Gmail — no lookup needed\nconst SYSTEM_LABELS = { IMPORTANT: \"IMPORTANT\", STARRED: \"STARRED\", INBOX: \"INBOX\" };\n\nconst labelsToAdd = [...customLabelIds];\nif (decisionData.action_plan.mark_important) labelsToAdd.push(SYSTEM_LABELS.IMPORTANT);\nif (decisionData.action_plan.star_email) labelsToAdd.push(SYSTEM_LABELS.STARRED);\n\nreturn {\n  json: {\n    ...decisionData,\n    labels_to_add: [...new Set(labelsToAdd)],\n    labels_to_remove: decisionData.action_plan.archive_email ? [SYSTEM_LABELS.INBOX] : []\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2576,
+        -96
+      ],
+      "id": "ed0bec67-46d6-4d1c-9492-ec10ff45cad7",
+      "name": "resolve label id's"
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $json.message_id }}",
+        "labelIds": "={{ $json.labels_to_add }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2784,
+        -96
+      ],
+      "id": "15092440-e895-4265-80d0-35a585384cf9",
+      "name": "Add label to message",
+      "webhookId": "57c6eabb-efc7-4879-b55a-ecedd1879649",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Gmail account",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "effc3deb-1d71-40f4-8944-bc06dee9d24e",
+              "name": "sender_name",
+              "value": "={{ $json.sender_name }}",
+              "type": "string"
+            },
+            {
+              "id": "37983d1d-8dc5-48b2-bc62-6fc7e089c11f",
+              "name": "sender_email",
+              "value": "={{ $json.sender_email }}",
+              "type": "string"
+            },
+            {
+              "id": "543a7c5a-2849-45e2-955d-18251f1a89f4",
+              "name": "subject",
+              "value": "={{ $json.subject.trim() }}",
+              "type": "string"
+            },
+            {
+              "id": "8111b126-15ca-4240-93f7-710036f6943f",
+              "name": "=email_body_clean",
+              "value": "={{ $json.email_body_clean.replace(/\\n{2,}/g, \"\\n\").replace(/[ \\t]{2,}/g, \" \").trim().slice(0, 3000) }}",
+              "type": "string"
+            },
+            {
+              "id": "d0b65584-abe5-4a1a-a6b5-c56f5a136d02",
+              "name": "existing_labels",
+              "value": "={{ $json.existing_labels }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1040,
+        0
+      ],
+      "id": "43187c8f-68d8-4f89-9602-2cb1abed61f3",
+      "name": "Prepare AI Input"
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = [];\n\nconst importantDomains = [\n  \"careers.google.com\", \"linkedin.com\", \"internshala.com\",\n  \"naukri.com\", \"hackerrank.com\", \"leetcode.com\", \"github.com\",\n  \"unstop.com\", \"unstop.news\",\n  \"codeforces.com\", \"codechef.com\", \"atcoder.jp\",\n  \"hackerearth.com\", \"topcoder.com\", \"geeksforgeeks.org\",\n  \"leetcode.com\", \"spoj.com\", \"codingninjas.com\"\n];\n\nconst promotionKeywords = [\n  \"50% off\", \"discount\", \"limited-time\", \"limited time\", \"sale\",\n  \"coupon\", \"deal\", \"buy now\", \"claim now\", \"special offer\",\n  \"exclusive offer\", \"save big\", \"offer ends\", \"upgrade now\",\n  \"get premium\", \"unsubscribe\", \"learn more\"\n];\n\nfunction htmlToText(html) {\n  if (!html) return '';\n  return html\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, '')\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/p>/gi, '\\n')\n    .replace(/<\\/div>/gi, '\\n')\n    .replace(/<\\/tr>/gi, '\\n')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .replace(/&quot;/g, '\"')\n    .replace(/&#\\d+;/g, '')\n    .replace(/&[a-zA-Z]+;/g, '')\n    .replace(/[ \\t]{2,}/g, ' ')\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .trim();\n}\n\nfunction stripBrokenIcons(text) {\n  return text\n    .replace(/[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}\\u{2190}-\\u{21FF}\\u{2B00}-\\u{2BFF}]/gu, '')\n    .replace(/[\\uFFFD]/g, '')\n    .replace(/\\s{2,}/g, ' ')\n    .trim();\n}\n\n// Strip long tracking URLs (Spotify-style) before keyword/AI processing — noise reduction\nfunction stripLongUrls(text) {\n  return text.replace(/https?:\\/\\/\\S{40,}/g, '[link]');\n}\n\nfor (const item of $input.all()) {\n  const raw = item.json;\n\n  const senderEmail = (raw.from?.value?.[0]?.address || \"\").toLowerCase();\n  const senderName = raw.from?.value?.[0]?.name || \"\";\n  const subject = (raw.subject || \"\").trim();\n  const labels = raw.labelIds || [];\n\n  let bodyText = (raw.text || '').trim();\n  let bodySource = 'text';\n\n  if (!bodyText || bodyText.length < 20) {\n    if (raw.html) {\n      bodyText = htmlToText(raw.html);\n      bodySource = 'html_stripped';\n    }\n  }\n  if (!bodyText || bodyText.length < 5) {\n    bodyText = raw.snippet || '';\n    bodySource = 'snippet_fallback';\n  }\n  bodyText = stripBrokenIcons(stripLongUrls(bodyText));\n\n  // Gmail's label is now just a HINT passed to the AI, not a skip trigger\n  const gmailCategoryHint = labels.find(l => l.startsWith('CATEGORY_')) || null;\n\n  // Only strong keyword evidence triggers a hard skip\n  const searchText = `${subject} ${bodyText}`.toLowerCase();\n  const obviousPromotion = promotionKeywords.some(keyword => searchText.includes(keyword));\n  const trustedSender = importantDomains.some(domain => senderEmail.includes(domain));\n  const skipAI = obviousPromotion && !trustedSender;\n\n  output.push({\n    json: {\n      message_id: raw.id,\n      thread_id: raw.threadId,\n      sender_name: senderName,\n      sender_email: senderEmail,\n      subject,\n      email_body_clean: bodyText,\n      body_source: bodySource,\n      gmail_category_hint: gmailCategoryHint,\n      received_at: raw.date,\n      existing_labels: labels,\n      skip_ai: skipAI\n    }\n  });\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        0
+      ],
+      "id": "5a58ea11-6858-4c57-98cc-fffa7d39c117",
+      "name": "Extract email data"
+    },
+    {
+      "parameters": {
+        "jsCode": "const httpResponse = $input.first().json;\nconst prevData = $(\"Extract email data\").first().json;\n\nlet parsed;\ntry {\n  const rawContent = httpResponse.choices[0].message.content;\n  parsed = JSON.parse(rawContent);\n} catch (err) {\n  const errorMessage = err instanceof Error ? err.message : String(err);\n  return {\n    json: {\n      parse_error: true,\n      parse_error_message: errorMessage,\n      raw_content: httpResponse?.choices?.[0]?.message?.content ?? null,\n      message_id: prevData.message_id,\n      thread_id: prevData.thread_id\n    }\n  };\n}\n\nreturn {\n  json: {\n    message_id: prevData.message_id,\n    thread_id: prevData.thread_id,\n    sender_name: prevData.sender_name,\n    sender_email: prevData.sender_email,\n    subject: prevData.subject,\n    existing_labels: prevData.existing_labels,\n    category: parsed.category,\n    importance: parsed.importance,\n    urgency_score: parsed.urgency_score,\n    action_required: parsed.action_required,\n    deadline_detected: parsed.deadline_detected,\n    reason: parsed.reason,\n    summary: parsed.summary,\n    event_datetime : parsed.event_datetime,\n    event_type : parsed.event_type, \n    parse_error: false\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        0
+      ],
+      "id": "c2a7ced5-ade9-44ec-bdf6-03b46384f97b",
+      "name": "parse structured output"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fe84c600-098b-44b8-b300-d7fd019f8da5",
+              "leftValue": "={{ $json.action_plan.trigger_urgent_notification }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2480,
+        256
+      ],
+      "id": "75474ffc-80f2-40b5-8171-e2daf1350d58",
+      "name": "should notify?"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\n\nconst message = `🔔 *Action Required*\n*${item.category}* | Urgency: ${item.urgency_score}/10\n*${item.subject}*\nFrom: ${item.sender_name}\n${item.deadline_detected ? `⏰ Deadline: ${item.deadline_detected}` : ''}\n${item.summary}`;\n\nreturn {\n  json: {\n    ...item,\n    telegram_text: message\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2736,
+        240
+      ],
+      "id": "b3abe7dd-5c6b-45a4-8896-de0e36347555",
+      "name": "build telegram message"
+    },
+    {
+      "parameters": {
+        "chatId": "5616237408",
+        "text": "={{ $json.telegram_text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2944,
+        240
+      ],
+      "id": "d7180f18-3c6f-441a-b11b-7d96f8432059",
+      "name": "Send a text message",
+      "webhookId": "1f04bc6e-9440-4c27-b4f9-51c400711e7d",
+      "retryOnFail": true,
+      "waitBetweenTries": 2000,
+      "credentials": {
+        "telegramApi": {
+          "id": "Telegram account",
+          "name": "Telegram account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4e041d32-4f58-4c2c-961d-75f18736426e",
+              "leftValue": "={{ $json.action_plan.create_calendar_event }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2352,
+        -336
+      ],
+      "id": "f03bfa1f-165e-4f64-b3b4-fe639698505c",
+      "name": "add to calendar"
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "2ead15584c18b3656ca086089e582f9a14213633bd9de0015795ee4015c7ae18@group.calendar.google.com",
+          "mode": "list",
+          "cachedResultName": "deadlines and mail events"
+        },
+        "end": "={{ $json.event_datetime }}",
+        "additionalFields": {
+          "description": "={{ $json.reason }}",
+          "summary": "={{ $json.category + \" • \" + $json.summary }}"
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        2560,
+        -432
+      ],
+      "id": "644bd495-ac62-424d-84b7-6977f06e56e5",
+      "name": "Create an event",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "Google Calendar account",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "removeLabels",
+        "messageId": "={{ $json.message_id }}",
+        "labelIds": [
+          "INBOX"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1120,
+        -272
+      ],
+      "id": "fcc530af-841c-4f67-be38-72b65f2188fa",
+      "name": "remove labels",
+      "webhookId": "4e85df0b-a7ac-429b-84d4-7b27bbbdd774",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Gmail account",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $json.id }}",
+        "labelIds": [
+          "Label_5"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1328,
+        -272
+      ],
+      "id": "2ea9868f-8f87-40c4-a61a-650880c21570",
+      "name": "move the mail to promotions",
+      "webhookId": "f86f9e2e-1675-4662-9339-6dc79481213d",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Gmail account",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4a54a234-c7a6-4344-9994-66fa09cf5490",
+              "leftValue": "={{ $json.skip_ai }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        832,
+        0
+      ],
+      "id": "c23d8ce5-8a20-49e3-91b2-1e0f165a7725",
+      "name": "check if it is a promotional mail"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "da8d2c19-e466-422c-82a5-95b7632e8233",
+              "leftValue": "={{ $json.validation_passed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1888,
+        0
+      ],
+      "id": "beec7196-f3c1-45fa-b519-190c2d02cf27",
+      "name": "check whether the mail passed validation"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract email data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "http request": {
+      "main": [
+        [
+          {
+            "node": "parse structured output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Classification": {
+      "main": [
+        [
+          {
+            "node": "check whether the mail passed validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision Engine": {
+      "main": [
+        [
+          {
+            "node": "Get all labels",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "should notify?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "add to calendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get all labels": {
+      "main": [
+        [
+          {
+            "node": "resolve label id's",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "resolve label id's": {
+      "main": [
+        [
+          {
+            "node": "Add label to message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add label to message": {
+      "main": [
+        []
+      ]
+    },
+    "Prepare AI Input": {
+      "main": [
+        [
+          {
+            "node": "http request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract email data": {
+      "main": [
+        [
+          {
+            "node": "check if it is a promotional mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse structured output": {
+      "main": [
+        [
+          {
+            "node": "Validate Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "should notify?": {
+      "main": [
+        [
+          {
+            "node": "build telegram message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "build telegram message": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "add to calendar": {
+      "main": [
+        [
+          {
+            "node": "Create an event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "remove labels": {
+      "main": [
+        [
+          {
+            "node": "move the mail to promotions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check if it is a promotional mail": {
+      "main": [
+        [
+          {
+            "node": "remove labels",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare AI Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "check whether the mail passed validation": {
+      "main": [
+        [
+          {
+            "node": "Decision Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "errorWorkflow": "msR1C3gyUKBzbloL",
+    "timeSavedPerExecution": 0
+  },
+  "versionId": "17cef150-424b-4388-9a85-0220f8984987",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "328d0eab016b08ab9466636f085ebbb92fdac4f96219cfa14dcf62f66841b1b3"
+  },
+  "id": "msR1C3gyUKBzbloL",
+  "tags": []
+}
